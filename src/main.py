@@ -25,8 +25,15 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
     ranks_raw, ranks_filter, mrr_raw_list, mrr_filter_list = [], [], [], []
     ranks_raw_r, ranks_filter_r, mrr_raw_list_r, mrr_filter_list_r = [], [], [], []
 
+    # RCEV candidate dump hook (additive; disabled unless --dump-candidates is set)
+    dump_enabled = bool(getattr(args, "dump_candidates", "")) and mode in ("valid", "test")
+    dumper = None
+    if dump_enabled:
+        from src.evidence.dumper import CandidateDumper
+        dumper = CandidateDumper(args.dump_topk)
+
     idx = 0
-    if mode == "test":
+    if mode == "test" or (dump_enabled and mode == "valid"):
         # test mode: load parameter form file
         if use_cuda:
             checkpoint = torch.load(model_name, map_location=torch.device(args.gpu))
@@ -84,6 +91,9 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
 
         test_triples, final_score, final_r_score = model.predict(history_glist, num_rels, static_graph, test_triples_input, one_hot_tail_seq, one_hot_rel_seq, use_cuda)
 
+        if dumper is not None:
+            dumper.update(test_triples, final_score, all_ans_list[time_idx])
+
         mrr_filter_snap_r, mrr_snap_r, rank_raw_r, rank_filter_r = utils.get_total_rank(test_triples, final_r_score, all_ans_r_list[time_idx], eval_bz=1000, rel_predict=1)
         mrr_filter_snap, mrr_snap, rank_raw, rank_filter = utils.get_total_rank(test_triples, final_score, all_ans_list[time_idx], eval_bz=1000, rel_predict=0)
 
@@ -118,6 +128,17 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
     mrr_filter, hit_result_filter = utils.stat_ranks(ranks_filter, "filter_ent")
     mrr_raw_r, hit_result_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r, hit_result_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
+    if dumper is not None:
+        dump_path = os.path.join(
+            args.dump_candidates,
+            "{}_{}_topk{}.pkl".format(args.dataset, mode, args.dump_topk))
+        dumper.save(dump_path, meta={
+            "dataset": args.dataset,
+            "split": mode,
+            "model_name": model_name,
+            "topk": args.dump_topk,
+            "argv": sys.argv,
+        })
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, hit_result_raw, hit_result_filter, hit_result_raw_r, hit_result_filter_r
 
 
@@ -236,6 +257,24 @@ def run_experiment(args, history_len=None, n_layers=None, dropout=None, n_bases=
 
 
     if args.test and os.path.exists(model_state_file):
+        if getattr(args, "dump_candidates", ""):
+            # RCEV dump mode: also evaluate the validation split so that both
+            # valid and test candidate caches are produced from the same
+            # checkpoint. Uses ground-truth history, same as training-time
+            # validation.
+            test(model,
+                 train_list,
+                 valid_list,
+                 num_rels,
+                 num_nodes,
+                 use_cuda,
+                 all_ans_list_valid,
+                 all_ans_list_r_valid,
+                 model_state_file,
+                 static_graph,
+                 valid_times,
+                 history_val_time_nogt,
+                 "valid")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r, hit_result_raw, hit_result_filter, hit_result_raw_r, hit_result_filter_r = test(model,
                                                             train_list+valid_list, 
                                                             test_list, 
@@ -381,6 +420,14 @@ if __name__ == '__main__':
                         help="do multi-steps inference without ground truth")
     parser.add_argument("--topk", type=int, default=50,
                         help="choose top k entities as results when do multi-steps without ground truth")
+    parser.add_argument("--dump-candidates", type=str, default="",
+                        help="directory to dump top-k entity candidates per query "
+                             "(RCEV evidence cache); empty string disables dumping")
+    parser.add_argument("--dump-topk", type=int, default=50,
+                        help="number of top candidates stored per query in dump mode")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="fix random/numpy/torch seeds for reproducibility "
+                             "(default None keeps the original unseeded behavior)")
     parser.add_argument("--add-static-graph",  action='store_true', default=False,
                         help="use the info of static graph")
     parser.add_argument("--add-rel-word", action='store_true', default=False,
@@ -477,6 +524,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     print(args)
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        print("Using fixed seed: {}".format(args.seed))
     if args.grid_search:
         out_log = '../results/{}.{}.gs'.format(args.dataset, args.encoder+"-"+args.decoder+"-"+args.save)
         o_f = open(out_log, 'w')
@@ -563,6 +616,3 @@ if __name__ == '__main__':
     else:
         run_experiment(args)
     sys.exit()
-
-
-

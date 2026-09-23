@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Large / regenerable experiment artifacts (kept on server, not in git)
+candidates/
+models/
+logs/
+data/*/history/
