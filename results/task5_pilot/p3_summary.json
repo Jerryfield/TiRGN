@@ -1,0 +1,9 @@
+{
+  "n": 500,
+  "n_parsed": 500,
+  "recovered": 7,
+  "recovery_rate": 0.014,
+  "mrr_old": 0.005845584848266132,
+  "mrr_new_with_insert": 0.015633719388005073,
+  "decision": "FAIL (<5% recovery)"
+}
